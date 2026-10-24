@@ -3,6 +3,7 @@ package com.shapeshed.aerial.ui
 import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.ViewModel
+import com.shapeshed.aerial.data.StationListUpdater
 import com.shapeshed.aerial.testing.MemoryDataStore
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -48,12 +49,12 @@ class SettingsViewModelTest {
         viewModel.exportBackup(mock())
         runCurrent()
 
-        assertEquals(SettingsBackupResult.Exported, viewModel.settings.value?.backupResult)
+        assertEquals(SettingsResult.Exported, viewModel.settings.value?.result)
 
-        viewModel.onBackupResultShown(SettingsBackupResult.Exported)
+        viewModel.onResultShown(SettingsResult.Exported)
         runCurrent()
 
-        assertNull(viewModel.settings.value?.backupResult)
+        assertNull(viewModel.settings.value?.result)
     }
 
     @Test
@@ -68,7 +69,7 @@ class SettingsViewModelTest {
         viewModel.importBackup(mock())
         runCurrent()
 
-        assertEquals(SettingsBackupResult.Imported(3), viewModel.settings.value?.backupResult)
+        assertEquals(SettingsResult.Imported(3), viewModel.settings.value?.result)
     }
 
     @Test
@@ -83,7 +84,7 @@ class SettingsViewModelTest {
         viewModel.exportBackup(mock())
         runCurrent()
 
-        assertEquals(SettingsBackupResult.ExportFailed, viewModel.settings.value?.backupResult)
+        assertEquals(SettingsResult.ExportFailed, viewModel.settings.value?.result)
     }
 
     @Test
@@ -96,7 +97,7 @@ class SettingsViewModelTest {
         viewModel.exportBackup(mock())
         runCurrent()
 
-        assertNull(viewModel.settings.value?.backupResult)
+        assertNull(viewModel.settings.value?.result)
     }
 
     @Test
@@ -125,12 +126,46 @@ class SettingsViewModelTest {
         viewModel.importBackup(mock())
         runCurrent()
 
-        assertEquals(SettingsBackupResult.ImportFailed, viewModel.settings.value?.backupResult)
+        assertEquals(SettingsResult.ImportFailed, viewModel.settings.value?.result)
     }
 
-    private fun viewModel(backupManager: SettingsBackupManager): SettingsViewModel =
-        SettingsViewModel(mock<Application>(), MemoryDataStore(), backupManager)
-            .also(viewModels::add)
+    @Test
+    fun stationListUpdateReportsTheImportedCount() = runTest {
+        val viewModel = viewModel(FakeSettingsBackupManager(), FakeStationListUpdater(stationCount = 44_142))
+        backgroundScope.launch { viewModel.settings.collect() }
+        runCurrent()
+
+        viewModel.updateStationList()
+        runCurrent()
+
+        assertEquals(SettingsResult.StationsUpdated(44_142), viewModel.settings.value?.result)
+    }
+
+    @Test
+    fun stationListUpdateWithoutAReplacementKeepsTheBundledList() = runTest {
+        val viewModel = viewModel(FakeSettingsBackupManager(), FakeStationListUpdater(stationCount = null))
+        backgroundScope.launch { viewModel.settings.collect() }
+        runCurrent()
+
+        viewModel.updateStationList()
+        runCurrent()
+
+        assertEquals(SettingsResult.StationsUpdateFailed, viewModel.settings.value?.result)
+    }
+
+    private fun viewModel(
+        backupManager: SettingsBackupManager,
+        stationListUpdater: StationListUpdater = FakeStationListUpdater(),
+    ): SettingsViewModel = SettingsViewModel(
+        mock<Application>(),
+        MemoryDataStore(),
+        backupManager,
+        stationListUpdater,
+    ).also(viewModels::add)
+
+    private class FakeStationListUpdater(private val stationCount: Int? = 0) : StationListUpdater {
+        override suspend fun update(): Int? = stationCount
+    }
 
     private class FakeSettingsBackupManager(
         private val exportResult: BackupOperationResult<Unit> = BackupOperationResult.Success(Unit),
