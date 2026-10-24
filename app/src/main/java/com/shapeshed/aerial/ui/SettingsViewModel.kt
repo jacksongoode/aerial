@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.shapeshed.aerial.data.SHOW_HOME_KEY
 import com.shapeshed.aerial.data.SHOW_STREAM_BITRATE_KEY
+import com.shapeshed.aerial.data.StationListUpdater
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,14 +26,15 @@ class SettingsViewModel @Inject internal constructor(
     application: Application,
     private val dataStore: DataStore<Preferences>,
     private val backupManager: SettingsBackupManager,
+    private val stationListUpdater: StationListUpdater,
 ) : AndroidViewModel(application) {
-    private val _backupResult = MutableStateFlow<SettingsBackupResult?>(null)
-    private val backupResult: StateFlow<SettingsBackupResult?> = _backupResult.asStateFlow()
+    private val _result = MutableStateFlow<SettingsResult?>(null)
+    private val result: StateFlow<SettingsResult?> = _result.asStateFlow()
 
     val settings: StateFlow<SettingsUiState?> = combine(
         dataStore.data.map(::settingsUiState),
-        backupResult,
-    ) { settings, result -> settings.copy(backupResult = result) }
+        result,
+    ) { settings, result -> settings.copy(result = result) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun setShowStreamBitrate(enabled: Boolean) {
@@ -49,24 +51,34 @@ class SettingsViewModel @Inject internal constructor(
 
     fun exportBackup(uri: Uri) {
         viewModelScope.launch {
-            _backupResult.value = when (backupManager.export(uri)) {
-                is BackupOperationResult.Success -> SettingsBackupResult.Exported
-                is BackupOperationResult.Failure -> SettingsBackupResult.ExportFailed
+            _result.value = when (backupManager.export(uri)) {
+                is BackupOperationResult.Success -> SettingsResult.Exported
+                is BackupOperationResult.Failure -> SettingsResult.ExportFailed
             }
         }
     }
 
     fun importBackup(uri: Uri) {
         viewModelScope.launch {
-            _backupResult.value = when (val result = backupManager.import(uri)) {
-                is BackupOperationResult.Success -> SettingsBackupResult.Imported(result.value)
-                is BackupOperationResult.Failure -> SettingsBackupResult.ImportFailed
+            _result.value = when (val result = backupManager.import(uri)) {
+                is BackupOperationResult.Success -> SettingsResult.Imported(result.value)
+                is BackupOperationResult.Failure -> SettingsResult.ImportFailed
             }
         }
     }
 
-    fun onBackupResultShown(result: SettingsBackupResult) {
-        _backupResult.compareAndSet(result, null)
+    fun updateStationList() {
+        if (_result.value == SettingsResult.UpdatingStations) return
+        viewModelScope.launch {
+            _result.value = SettingsResult.UpdatingStations
+            _result.value = stationListUpdater.update()
+                ?.let { SettingsResult.StationsUpdated(it) }
+                ?: SettingsResult.StationsUpdateFailed
+        }
+    }
+
+    fun onResultShown(result: SettingsResult) {
+        _result.compareAndSet(result, null)
     }
 }
 
@@ -75,15 +87,18 @@ internal fun settingsUiState(preferences: Preferences): SettingsUiState = Settin
     showHome = preferences[SHOW_HOME_KEY] ?: true,
 )
 
-sealed interface SettingsBackupResult {
-    data object Exported : SettingsBackupResult
-    data class Imported(val stationCount: Int) : SettingsBackupResult
-    data object ExportFailed : SettingsBackupResult
-    data object ImportFailed : SettingsBackupResult
+sealed interface SettingsResult {
+    data object Exported : SettingsResult
+    data class Imported(val stationCount: Int) : SettingsResult
+    data object ExportFailed : SettingsResult
+    data object ImportFailed : SettingsResult
+    data object UpdatingStations : SettingsResult
+    data class StationsUpdated(val stationCount: Int) : SettingsResult
+    data object StationsUpdateFailed : SettingsResult
 }
 
 data class SettingsUiState(
     val showStreamBitrate: Boolean = false,
     val showHome: Boolean = true,
-    val backupResult: SettingsBackupResult? = null,
+    val result: SettingsResult? = null,
 )
