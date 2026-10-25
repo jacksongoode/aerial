@@ -44,8 +44,11 @@ jobs:
           set -euo pipefail
           TAG="registry-latest"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # Without --latest=false GitHub would mark this data-only release Latest, and
+            # /releases/latest would hand visitors a release with no APK.
             gh release create "$TAG" \
+              --latest=false \
               --title "Station registry (rolling)" \
-              --notes "Auto-generated station registry. Updated whenever registry.json changes or on the weekly schedule. Do not delete: the app's \"Update station list\" action downloads from here."
+              --notes "Auto-generated station registry. Updated whenever registry.json changes or on the weekly schedule. Do not delete: the app's \"Update station list\" action downloads here."
           fi
           gh release upload "$TAG" registry.db.compressed --clobber
