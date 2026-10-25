@@ -10,6 +10,7 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -45,6 +46,32 @@ class RegistryStationListImportTest {
         assertEquals(listOf(7L, 8L), stations.map { it.id })
         assertEquals(listOf("Published One", "Published Two"), stations.map { it.name })
         assertEquals(listOf("Published One", "Published Two"), search)
+    }
+
+    @Test
+    fun idsAreKeptForStationsThatSurviveAndNeverReusedForNewOnes() = runBlocking {
+        live.registryDao().insertAll(listOf(station(1, "Alpha"), station(2, "Bravo")))
+
+        // Alpha survives, Bravo disappears, Charlie is new, and the snapshot renumbers everything.
+        val published = publishedDatabase(station(99, "Alpha"), station(100, "Charlie"))
+        assertEquals(2, importStationList(live, published))
+
+        val byName = live.registryDao().all().associateBy { it.name }
+        // Android Auto caches reg:<id> browse items, so a surviving station must keep its id…
+        assertEquals(1L, byName.getValue("Alpha").id)
+        // …and the id freed by Bravo must not be handed to Charlie.
+        assertNotEquals(2L, byName.getValue("Charlie").id)
+        assertEquals(3L, byName.getValue("Charlie").id)
+    }
+
+    @Test
+    fun importingTheSameSnapshotTwiceKeepsIdsStable() = runBlocking {
+        importStationList(live, publishedDatabase(station(7, "Alpha"), station(8, "Bravo")))
+        val firstIds = live.registryDao().all().map { it.name to it.id }
+
+        assertEquals(2, importStationList(live, publishedDatabase(station(7, "Alpha"), station(8, "Bravo"))))
+
+        assertEquals(firstIds, live.registryDao().all().map { it.name to it.id })
     }
 
     @Test
@@ -109,13 +136,15 @@ class RegistryStationListImportTest {
             .build()
     }
 
+    // providerId is the stable identity, so the same station can move to a different id in a
+    // later snapshot the way the registry generator renumbers rows.
     private fun station(id: Long, name: String) = RegistryStation(
         id = id,
         name = name,
-        streamUrl = "https://example.test/$id",
+        streamUrl = "https://example.test/$name",
         tags = "test",
         provider = "test",
-        providerId = id.toString(),
+        providerId = name,
         searchText = name,
     )
 }

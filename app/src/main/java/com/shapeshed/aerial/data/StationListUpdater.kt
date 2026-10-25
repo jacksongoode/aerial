@@ -36,7 +36,8 @@ class ReleaseStationListUpdater(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : StationListUpdater {
     override suspend fun update(): Int? = withContext(ioDispatcher) {
-        val source = File(cacheDir, "registry-update.db")
+        // A per-run file: two updates must never write through the same handle.
+        val source = File.createTempFile("registry-update", ".db", cacheDir)
         try {
             httpGetStream(STATION_LIST_URL) { input ->
                 GZIPInputStream(input).use { gzip ->
@@ -60,6 +61,11 @@ class ReleaseStationListUpdater(
 /**
  * Replaces every row in [database] with the contents of [source], a registry database built from
  * the same Room schema. Returns the station count, or null if [source] was refused.
+ *
+ * Ids are carried over for stations that still exist: the generator assigns them in snapshot
+ * order, so an updated snapshot would otherwise hand an existing id to a different station, and
+ * Android Auto resolves its cached `reg:<id>` browse items by id when the user presses play.
+ * Ids of stations that disappeared are never reused.
  */
 internal suspend fun importStationList(database: RegistryDatabase, source: File): Int? =
     runCatching { SQLiteDatabase.openDatabase(source.path, null, SQLiteDatabase.OPEN_READONLY) }
@@ -69,13 +75,18 @@ internal suspend fun importStationList(database: RegistryDatabase, source: File)
             // and an empty one would wipe the list, so refuse both rather than destroy the data.
             val matchesSchema = published.identityHash() == database.identityHash()
             if (!matchesSchema || published.stationCount() == 0) return null
+            // Freed ids are always <= the local max, so numbering above it never reuses one.
+            val idsByIdentity = database.stationIdsByIdentity()
+            var nextFreeId = (idsByIdentity.values.maxOrNull() ?: 0L) + 1
             database.withTransaction {
                 val dao = database.registryDao()
                 dao.deleteAll()
                 published.rawQuery("SELECT * FROM registry_stations", null).use { cursor ->
                     val batch = ArrayList<RegistryStation>(IMPORT_BATCH)
                     while (cursor.moveToNext()) {
-                        batch += cursor.registryStation()
+                        val station = cursor.registryStation()
+                        val id = idsByIdentity.remove(station.identityKey()) ?: nextFreeId++
+                        batch += station.copy(id = id)
                         if (batch.size == IMPORT_BATCH) {
                             dao.insertAll(batch)
                             batch.clear()
@@ -86,6 +97,33 @@ internal suspend fun importStationList(database: RegistryDatabase, source: File)
                 dao.count()
             }
         }
+
+/** Stable identity of a station across registry snapshots. */
+private fun RegistryStation.identityKey(): String =
+    if (providerId.isNotBlank()) "id:$provider/$providerId" else "url:$streamUrl"
+
+/** Ids of the registry's current rows, keyed by [identityKey]. */
+private fun RegistryDatabase.stationIdsByIdentity(): MutableMap<String, Long> {
+    val ids = HashMap<String, Long>()
+    openHelper.readableDatabase
+        .query("SELECT id, provider, providerId, streamUrl FROM registry_stations")
+        .use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow("id")
+            while (cursor.moveToNext()) {
+                val providerId = cursor.string("providerId")
+                val key = if (providerId.isNotBlank()) {
+                    "id:${cursor.string("provider")}/$providerId"
+                } else {
+                    "url:${cursor.string("streamUrl")}"
+                }
+                // Duplicate identities in the snapshot keep the first id, so the mapping is stable.
+                ids.putIfAbsent(key, cursor.getLong(idColumn))
+            }
+        }
+    return ids
+}
+
+private fun Cursor.string(column: String): String = getString(getColumnIndexOrThrow(column)).orEmpty()
 
 private fun RegistryDatabase.identityHash(): String? =
     openHelper.readableDatabase.query(IDENTITY_HASH_QUERY).use { it.firstString() }
@@ -101,7 +139,7 @@ private fun Cursor.firstString(): String? = if (moveToFirst()) getString(0) else
 private fun Cursor.firstInt(): Int = if (moveToFirst()) getInt(0) else 0
 
 private fun Cursor.registryStation(): RegistryStation {
-    fun text(column: String): String = getString(getColumnIndexOrThrow(column)) ?: ""
+    fun text(column: String): String = string(column)
     return RegistryStation(
         id = getLong(getColumnIndexOrThrow("id")),
         name = text("name"),
