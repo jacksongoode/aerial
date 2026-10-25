@@ -15,7 +15,7 @@ import kotlinx.coroutines.withContext
  * nothing here runs unless the user asks for it from Settings.
  */
 private const val STATION_LIST_URL =
-    "https://github.com/jacksongoode/aerial/releases/download/registry-latest/registry.db.compressed"
+    "https://github.com/shapeshed/aerial/releases/download/registry-latest/registry.db.compressed"
 
 private const val IMPORT_BATCH = 1_000
 private const val IDENTITY_HASH_QUERY = "SELECT identity_hash FROM room_master_table"
