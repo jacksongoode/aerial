@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import com.shapeshed.aerial.data.StationListUpdater
 import com.shapeshed.aerial.testing.MemoryDataStore
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.collect
@@ -153,6 +154,33 @@ class SettingsViewModelTest {
         assertEquals(SettingsResult.StationsUpdateFailed, viewModel.settings.value?.result)
     }
 
+    @Test
+    fun backupResultDuringAnUpdateKeepsTheUpdateRunning() = runTest {
+        val updater = BlockingStationListUpdater()
+        val viewModel = viewModel(FakeSettingsBackupManager(), updater)
+        backgroundScope.launch { viewModel.settings.collect() }
+        runCurrent()
+
+        viewModel.updateStationList()
+        runCurrent()
+        assertTrue(viewModel.settings.value!!.isUpdatingStations)
+
+        // A backup result landing mid-download must not clear the in-flight flag.
+        viewModel.exportBackup(mock())
+        runCurrent()
+        assertEquals(SettingsResult.Exported, viewModel.settings.value?.result)
+        assertTrue(viewModel.settings.value!!.isUpdatingStations)
+
+        viewModel.updateStationList()
+        runCurrent()
+        assertEquals(1, updater.starts)
+
+        updater.finish(44_142)
+        runCurrent()
+        assertFalse(viewModel.settings.value!!.isUpdatingStations)
+        assertEquals(SettingsResult.StationsUpdated(44_142), viewModel.settings.value?.result)
+    }
+
     private fun viewModel(
         backupManager: SettingsBackupManager,
         stationListUpdater: StationListUpdater = FakeStationListUpdater(),
@@ -165,6 +193,20 @@ class SettingsViewModelTest {
 
     private class FakeStationListUpdater(private val stationCount: Int? = 0) : StationListUpdater {
         override suspend fun update(): Int? = stationCount
+    }
+
+    /** Holds the update open so the busy flag can be observed, and counts how many times one starts. */
+    private class BlockingStationListUpdater : StationListUpdater {
+        private val result = CompletableDeferred<Int?>()
+        var starts = 0
+            private set
+
+        override suspend fun update(): Int? {
+            starts++
+            return result.await()
+        }
+
+        fun finish(stationCount: Int?) = result.complete(stationCount)
     }
 
     private class FakeSettingsBackupManager(

@@ -31,10 +31,15 @@ class SettingsViewModel @Inject internal constructor(
     private val _result = MutableStateFlow<SettingsResult?>(null)
     private val result: StateFlow<SettingsResult?> = _result.asStateFlow()
 
+    // Tracked separately from [result]: a backup result landing mid-download must not clear
+    // the in-flight flag, or the row would re-enable and a second update could start.
+    private val isUpdatingStations = MutableStateFlow(false)
+
     val settings: StateFlow<SettingsUiState?> = combine(
         dataStore.data.map(::settingsUiState),
         result,
-    ) { settings, result -> settings.copy(result = result) }
+        isUpdatingStations,
+    ) { settings, result, updating -> settings.copy(result = result, isUpdatingStations = updating) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun setShowStreamBitrate(enabled: Boolean) {
@@ -68,12 +73,15 @@ class SettingsViewModel @Inject internal constructor(
     }
 
     fun updateStationList() {
-        if (_result.value == SettingsResult.UpdatingStations) return
+        if (!isUpdatingStations.compareAndSet(expect = false, update = true)) return
         viewModelScope.launch {
-            _result.value = SettingsResult.UpdatingStations
-            _result.value = stationListUpdater.update()
-                ?.let { SettingsResult.StationsUpdated(it) }
-                ?: SettingsResult.StationsUpdateFailed
+            try {
+                _result.value = stationListUpdater.update()
+                    ?.let { SettingsResult.StationsUpdated(it) }
+                    ?: SettingsResult.StationsUpdateFailed
+            } finally {
+                isUpdatingStations.value = false
+            }
         }
     }
 
@@ -92,7 +100,6 @@ sealed interface SettingsResult {
     data class Imported(val stationCount: Int) : SettingsResult
     data object ExportFailed : SettingsResult
     data object ImportFailed : SettingsResult
-    data object UpdatingStations : SettingsResult
     data class StationsUpdated(val stationCount: Int) : SettingsResult
     data object StationsUpdateFailed : SettingsResult
 }
@@ -101,4 +108,5 @@ data class SettingsUiState(
     val showStreamBitrate: Boolean = false,
     val showHome: Boolean = true,
     val result: SettingsResult? = null,
+    val isUpdatingStations: Boolean = false,
 )

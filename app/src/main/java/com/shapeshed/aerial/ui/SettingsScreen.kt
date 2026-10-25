@@ -92,9 +92,6 @@ fun SettingsScreen(viewModel: SettingsViewModel, onDismiss: () -> Unit, modifier
 
         SettingsResult.StationsUpdateFailed -> stringResource(R.string.stations_update_failed)
 
-        // Shown on the row itself while the download runs.
-        SettingsResult.UpdatingStations -> null
-
         null -> null
     }
 
@@ -115,7 +112,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onDismiss: () -> Unit, modifier
     SettingsContent(
         showStreamBitrate = loadedSettings.showStreamBitrate,
         showHome = loadedSettings.showHome,
-        isUpdatingStations = loadedSettings.result == SettingsResult.UpdatingStations,
+        isUpdatingStations = loadedSettings.isUpdatingStations,
         snackbarHostState = snackbarHostState,
         versionLabel = versionLabel,
         onShowStreamBitrateChange = viewModel::setShowStreamBitrate,
